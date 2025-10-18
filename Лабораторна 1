@@ -1,0 +1,374 @@
+from google.colab import files
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.svm import SVC
+from sklearn.ensemble import RandomForestClassifier, AdaBoostClassifier
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, f1_score
+import warnings
+warnings.filterwarnings('ignore')
+
+# Завантаження файлу на Google Colab
+print("Завантаження файлу Meteorite_Landings.csv...")
+uploaded = files.upload()
+
+# Отримуємо ім'я завантаженого файлу
+file_name = list(uploaded.keys())[0]
+print(f"Файл '{file_name}' успішно завантажено!")
+
+# 1) Завантажити дані, вивести назви колонок і розмір датасета
+print("\n1) Завантаження даних:")
+data = pd.read_csv(file_name)
+print("Назви колонок:")
+print(data.columns.tolist())
+print("\nРозмір датасета:")
+print(data.shape)
+
+# Додатково: переглянемо основну інформацію про дані
+print("\nПерші 5 рядків даних:")
+print(data.head())
+
+print("\nІнформація про типи даних:")
+print(data.info())
+
+print("\nОсновні статистичні показники:")
+print(data.describe())
+
+# 2) Опрацювати пропуски
+print("\n2) Опрацювання пропусків:")
+print("Кількість пропусків по колонках:")
+print(data.isnull().sum())
+
+# Видалимо колонки з великою кількістю пропусків
+threshold = len(data) * 0.3  # видаляємо колонки з >30% пропусків
+data_cleaned = data.dropna(axis=1, thresh=threshold)
+
+print(f"\nКолонки після видалення з великою кількістю пропусків: {data_cleaned.columns.tolist()}")
+
+# Заповнимо пропуски в числових колонках медіаною
+numeric_columns = data_cleaned.select_dtypes(include=[np.number]).columns
+data_cleaned[numeric_columns] = data_cleaned[numeric_columns].fillna(data_cleaned[numeric_columns].median())
+
+# Заповнимо пропуски в категоріальних колонках модою
+categorical_columns = data_cleaned.select_dtypes(include=['object']).columns
+for col in categorical_columns:
+    if data_cleaned[col].isnull().sum() > 0:
+        data_cleaned[col] = data_cleaned[col].fillna(data_cleaned[col].mode()[0])
+
+print("\nКількість пропусків після обробки:")
+print(data_cleaned.isnull().sum())
+
+# 3) Візуалізація даних
+print("\n3) Візуалізація даних:")
+
+# Виберемо цільову змінну (припустимо, що це 'recclass' - клас метеориту)
+target_column = 'recclass'
+if target_column not in data_cleaned.columns:
+    # Якщо колонки немає, виберемо першу категоріальну колонку
+    target_column = data_cleaned.select_dtypes(include=['object']).columns[0]
+
+print(f"Цільова змінна: {target_column}")
+
+# Обмежимо кількість класів для кращої візуалізації
+if data_cleaned[target_column].nunique() > 10:
+    top_classes = data_cleaned[target_column].value_counts().head(10).index
+    data_viz = data_cleaned[data_cleaned[target_column].isin(top_classes)].copy()
+else:
+    data_viz = data_cleaned.copy()
+
+# Heatmap кореляцій
+plt.figure(figsize=(12, 8))
+numeric_data = data_viz.select_dtypes(include=[np.number])
+if len(numeric_data.columns) > 1:
+    corr = numeric_data.corr()
+    sns.heatmap(corr, cmap='coolwarm', annot=True, fmt=".2f", center=0)
+    plt.title('Heatmap кореляцій між ознаками')
+    plt.tight_layout()
+    plt.show()
+
+# Гістограми розподілу ознак (обмежимося 6 ознаками)
+numeric_columns_viz = numeric_data.columns[:6]
+fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+axes = axes.ravel()
+
+for i, col in enumerate(numeric_columns_viz):
+    data_viz[col].hist(bins=30, ax=axes[i])
+    axes[i].set_title(f'Розподіл {col}')
+    axes[i].set_xlabel(col)
+    axes[i].set_ylabel('Частота')
+
+plt.tight_layout()
+plt.show()
+
+# Boxplot-и ознак відносно цільової змінної
+fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+axes = axes.ravel()
+
+for i, col in enumerate(numeric_columns_viz[:4]):
+    sns.boxplot(x=target_column, y=col, data=data_viz, ax=axes[i])
+    axes[i].set_title(f'{col} по {target_column}')
+    axes[i].tick_params(axis='x', rotation=45)
+
+plt.tight_layout()
+plt.show()
+
+# 4) Нормалізація даних (ОНОВЛЕНА ВЕРСІЯ)
+print("\n4) Нормалізація даних:")
+
+# Виберемо ознаки для моделі (числові колонки)
+features = data_cleaned.select_dtypes(include=[np.number]).columns
+
+print(f"Ознаки для моделі: {features}")
+
+# Підготуємо дані для навчання
+X = data_cleaned[features]
+y = data_cleaned[target_column]
+
+# АНАЛІЗ ЦІЛЬОВОЇ ЗМІННОЇ
+print(f"\nАналіз цільової змінної '{target_column}':")
+print(f"Усього унікальних класів: {y.nunique()}")
+print(f"Розподіл топ-10 класів:")
+print(y.value_counts().head(10))
+
+# СТРАТЕГІЯ: об'єднаємо рідкісні класи в "Інші"
+top_n_classes = 10  # залишимо топ-10 найпоширеніших класів
+top_classes = y.value_counts().head(top_n_classes).index
+
+# Створюємо нову цільову змінну
+y_simplified = y.where(y.isin(top_classes), 'Інші')
+
+print(f"\nПісля об'єднання рідкісних класів:")
+print(f"Унікальних класів: {y_simplified.nunique()}")
+print(f"Розподіл:")
+print(y_simplified.value_counts())
+
+# Кодуємо спрощену цільову змінну
+le = LabelEncoder()
+y_encoded = le.fit_transform(y_simplified)
+
+print(f"\nКласи після кодування: {le.classes_}")
+
+# Нормалізація ознак
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
+# Розділення на тренувальну та тестову вибірки
+X_train, X_test, y_train, y_test = train_test_split(
+    X_scaled, y_encoded, test_size=0.2, random_state=42, stratify=y_encoded
+)
+
+print(f"\nРозмір тренувальної вибірки: {X_train.shape}")
+print(f"Розмір тестової вибірки: {X_test.shape}")
+print(f"Кількість класів у навчанні: {len(np.unique(y_train))}")
+
+# 5) Навчання класифікаторів та підбір параметрів
+print("\n" + "="*50)
+print("5) НАВЧАННЯ КЛАСИФІКАТОРІВ")
+print("="*50)
+
+# Оновлена функція для оцінки моделей
+def evaluate_model(model, X_test, y_test, model_name, le):
+    y_pred = model.predict(X_test)
+    accuracy = accuracy_score(y_test, y_pred)
+    f1 = f1_score(y_test, y_pred, average='weighted')
+    
+    print(f"\n{model_name} Результати:")
+    print(f"Accuracy: {accuracy:.4f}")
+    print(f"F1-score: {f1:.4f}")
+    
+    # Отримуємо реальні класи, які присутні в тестових даних
+    unique_classes = np.unique(np.concatenate([y_test, y_pred]))
+    
+    # Перетворюємо числові мітки назад в оригінальні назви класів
+    available_class_names = le.inverse_transform(unique_classes)
+    
+    # Classification report
+    print(f"\nClassification Report для {model_name}:")
+    try:
+        print(classification_report(y_test, y_pred, 
+                                   labels=unique_classes,
+                                   target_names=available_class_names,
+                                   zero_division=0))
+    except Exception as e:
+        print(f"Помилка при створенні classification report: {e}")
+        print("Виводимо спрощений звіт:")
+        print(f"Унікальні класи: {len(unique_classes)}")
+        print(f"Приклад класів: {available_class_names[:5]}")  # показуємо перші 5
+    
+    # Спрощена Confusion matrix для багатьох класів
+    plt.figure(figsize=(12, 10))
+    cm = confusion_matrix(y_test, y_pred, labels=unique_classes)
+    
+    # Якщо занадто багато класів, показуємо heatmap без підписів
+    if len(unique_classes) > 20:
+        plt.imshow(cm, interpolation='nearest', cmap='Blues')
+        plt.title(f'Confusion Matrix - {model_name}\n(багато класів, підписи приховані)')
+        plt.colorbar()
+    else:
+        plt.imshow(cm, interpolation='nearest', cmap='Blues')
+        plt.title(f'Confusion Matrix - {model_name}')
+        plt.colorbar()
+        
+        tick_marks = np.arange(len(unique_classes))
+        plt.xticks(tick_marks, available_class_names, rotation=45, ha='right')
+        plt.yticks(tick_marks, available_class_names)
+        
+        # Додаємо числа в комірки
+        thresh = cm.max() / 2.
+        for i, j in np.ndindex(cm.shape):
+            plt.text(j, i, format(cm[i, j], 'd'),
+                     horizontalalignment="center",
+                     color="white" if cm[i, j] > thresh else "black")
+    
+    plt.ylabel('Справжні значення')
+    plt.xlabel('Передбачені значення')
+    plt.tight_layout()
+    plt.show()
+    
+    return accuracy, f1
+
+# Словник для зберігання результатів
+results = {}
+
+# kNN з GridSearch
+print("\n--- kNN з GridSearch ---")
+param_grid_knn = {
+    'n_neighbors': [3, 5, 7],
+    'weights': ['uniform', 'distance'],
+    'p': [1, 2]
+}
+
+knn = KNeighborsClassifier()
+grid_knn = GridSearchCV(knn, param_grid_knn, cv=3, scoring='f1_weighted', n_jobs=-1, verbose=1)
+grid_knn.fit(X_train, y_train)
+
+print(f"Найкращі параметри для kNN: {grid_knn.best_params_}")
+best_knn = grid_knn.best_estimator_
+knn_accuracy, knn_f1 = evaluate_model(best_knn, X_test, y_test, "kNN", le_filtered)
+results['kNN'] = (knn_accuracy, knn_f1, best_knn)
+
+# Дерево ухвалення рішень з GridSearch
+print("\n--- Дерево ухвалення рішень з GridSearch ---")
+param_grid_dt = {
+    'max_depth': [3, 5, 7],
+    'min_samples_split': [2, 5],
+    'min_samples_leaf': [1, 2]
+}
+
+dt = DecisionTreeClassifier(random_state=42)
+grid_dt = GridSearchCV(dt, param_grid_dt, cv=3, scoring='f1_weighted', n_jobs=-1, verbose=1)
+grid_dt.fit(X_train, y_train)
+
+print(f"Найкращі параметри для Decision Tree: {grid_dt.best_params_}")
+best_dt = grid_dt.best_estimator_
+dt_accuracy, dt_f1 = evaluate_model(best_dt, X_test, y_test, "Decision Tree", le_filtered)
+results['Decision Tree'] = (dt_accuracy, dt_f1, best_dt)
+
+# SVM з GridSearch
+print("\n--- SVM з GridSearch ---")
+param_grid_svm = {
+    'C': [0.1, 1, 10],
+    'gamma': [0.01, 0.1],
+    'kernel': ['rbf']
+}
+
+svm = SVC(random_state=42)
+grid_svm = GridSearchCV(svm, param_grid_svm, cv=3, scoring='f1_weighted', n_jobs=-1, verbose=1)
+grid_svm.fit(X_train, y_train)
+
+print(f"Найкращі параметри для SVM: {grid_svm.best_params_}")
+best_svm = grid_svm.best_estimator_
+svm_accuracy, svm_f1 = evaluate_model(best_svm, X_test, y_test, "SVM", le_filtered)
+results['SVM'] = (svm_accuracy, svm_f1, best_svm)
+
+# Випадковий ліс з GridSearch
+print("\n--- Випадковий ліс з GridSearch ---")
+param_grid_rf = {
+    'n_estimators': [50, 100],
+    'max_depth': [5, 10],
+    'min_samples_split': [2, 5]
+}
+
+rf = RandomForestClassifier(random_state=42)
+grid_rf = GridSearchCV(rf, param_grid_rf, cv=3, scoring='f1_weighted', n_jobs=-1, verbose=1)
+grid_rf.fit(X_train, y_train)
+
+print(f"Найкращі параметри для Random Forest: {grid_rf.best_params_}")
+best_rf = grid_rf.best_estimator_
+rf_accuracy, rf_f1 = evaluate_model(best_rf, X_test, y_test, "Random Forest", le_filtered)
+results['Random Forest'] = (rf_accuracy, rf_f1, best_rf)
+
+# AdaBoost з GridSearch
+print("\n--- AdaBoost з GridSearch ---")
+param_grid_ab = {
+    'n_estimators': [50, 100],
+    'learning_rate': [0.1, 1]
+}
+
+ab = AdaBoostClassifier(random_state=42)
+grid_ab = GridSearchCV(ab, param_grid_ab, cv=3, scoring='f1_weighted', n_jobs=-1, verbose=1)
+grid_ab.fit(X_train, y_train)
+
+print(f"Найкращі параметри для AdaBoost: {grid_ab.best_params_}")
+best_ab = grid_ab.best_estimator_
+ab_accuracy, ab_f1 = evaluate_model(best_ab, X_test, y_test, "AdaBoost", le_filtered)
+results['AdaBoost'] = (ab_accuracy, ab_f1, best_ab)
+
+# Порівняння моделей
+print("\n" + "="*50)
+print("ПОРІВНЯННЯ МОДЕЛЕЙ")
+print("="*50)
+
+# Створюємо DataFrame з результатами
+results_df = pd.DataFrame({
+    'Model': list(results.keys()),
+    'Accuracy': [results[model][0] for model in results],
+    'F1-score': [results[model][1] for model in results]
+})
+
+# Сортуємо за F1-score
+results_df = results_df.sort_values('F1-score', ascending=False)
+
+print("\nПорівняння моделей (відсортовано за F1-score):")
+print(results_df.to_string(index=False))
+
+# Візуалізація порівняння
+plt.figure(figsize=(12, 6))
+x = range(len(results_df))
+width = 0.35
+
+plt.bar([i - width/2 for i in x], results_df['Accuracy'], width, label='Accuracy', alpha=0.7, color='skyblue')
+plt.bar([i + width/2 for i in x], results_df['F1-score'], width, label='F1-score', alpha=0.7, color='lightcoral')
+
+plt.xlabel('Моделі')
+plt.ylabel('Оцінка')
+plt.title('Порівняння продуктивності моделей класифікації')
+plt.xticks(x, results_df['Model'], rotation=45)
+plt.legend()
+plt.grid(axis='y', alpha=0.3)
+plt.tight_layout()
+plt.show()
+
+# Виведення найкращої моделі
+best_model_name = results_df.iloc[0]['Model']
+best_accuracy = results_df.iloc[0]['Accuracy']
+best_f1 = results_df.iloc[0]['F1-score']
+best_model = results[best_model_name][2]
+
+print(f"\n НАЙКРАЩА МОДЕЛЬ: {best_model_name}")
+print(f" Accuracy: {best_accuracy:.4f}")
+print(f" F1-score: {best_f1:.4f}")
+
+# Додаткова інформація про найкращу модель
+print(f"\n Параметри найкращої моделі ({best_model_name}):")
+if hasattr(best_model, 'best_params_'):
+    print(best_model.best_params_)
+else:
+    print(best_model.get_params())
+
+print("\n Навчання завершено успішно!")
